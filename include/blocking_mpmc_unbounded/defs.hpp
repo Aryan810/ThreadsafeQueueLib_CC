@@ -2,13 +2,13 @@
 #define BLOCKING_MPMC_UNBOUNDED_DEFS
 
 #include "../utils.hpp"
+#include <atomic>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
-#include <atomic>
 #include <type_traits>
 
-namespace tsfqueue::__impl {
+namespace tsfqueue::impl {
 template <typename T> class blocking_mpmc_unbounded {
   // For the implementation, we start with a stub node and both head and tail
   // are initialized to it. When we push, we make a new stub node, move the data
@@ -19,7 +19,7 @@ template <typename T> class blocking_mpmc_unbounded {
   // by returning the data stored in head node and replacing head to its next
   // node. We handle the empty queue gracefully as per the pop type.
 private:
-  using node = tsfqueue::__utils::Node<T>;
+  using node = tsfqueue::utils::Node<T>;
 
   // Add private members :
   std::mutex head_mutex;
@@ -27,7 +27,8 @@ private:
   std::mutex tail_mutex;
   node *tail;
   size_t size_q; // newly added -> to maintain size of the queue.
-  std::mutex size_mutex; // newly added -> lock for accessing or modifying size_q.
+  std::mutex
+      size_mutex; // newly added -> lock for accessing or modifying size_q.
   std::condition_variable cond;
 
   // Description of private members :
@@ -55,20 +56,25 @@ private:
 
   // Private member functions :
 
-  node* get_tail(void);
   std::unique_ptr<node> wait_and_get();
   std::unique_ptr<node> try_get();
-  std::unique_ptr<node> wait_for_and_get(std::chrono::milliseconds); // Added New
+  std::unique_ptr<node>
+      wait_for_and_get(std::chrono::milliseconds); // Added New
 
-  // node *get_tail() : Helper function to get normal pointer to tail at a
-  // particular instant std::unique_ptr wait_and_get() : Helper function to
-  // blocking wait on unique_ptr of head after popping std::unique_ptr try_get()
-  // : Helper function to try to get unique_ptr of head after popping
+  // node *get_tail() : Helper function to get normal pointer to tail at a -
+  // removed as not used particular instant std::unique_ptr wait_and_get() :
+  // Helper function to blocking wait on unique_ptr of head after popping
+  // std::unique_ptr try_get() : Helper function to try to get unique_ptr of
+  // head after popping
 
 public:
   // Public member functions :
   // Add relevant constructors and destructors -> Add these here only
-  blocking_mpmc_unbounded(){
+  blocking_mpmc_unbounded() {
+
+    static_assert(!std::is_reference_v<T>,
+                  "Queue cannot store reference types.");
+
     head = std::make_unique<node>();
     tail = head.get();
     size_q = 0;
@@ -76,27 +82,32 @@ public:
 
   // Implemented an iterative destructor.
   ~blocking_mpmc_unbounded() {
-    while(head)
-    {
+
+    static_assert(
+        std::is_destructible_v<T>,
+        "Unable to destroy the queue, as the given type is not destructable.");
+
+    while (head) {
       head = std::move(head->next);
     }
   }
-  
-  // Removed Copy constrcutor, because we can't copy this queue, as it has pointers to memory locations.
-  blocking_mpmc_unbounded(const blocking_mpmc_unbounded& other) = delete;
-  blocking_mpmc_unbounded& operator=(const blocking_mpmc_unbounded& other) = delete;
-  
+
+  // Removed Copy constrcutor, because we can't copy this queue, as it has
+  // pointers to memory locations.
+  blocking_mpmc_unbounded(const blocking_mpmc_unbounded &other) = delete;
+  blocking_mpmc_unbounded &
+  operator=(const blocking_mpmc_unbounded &other) = delete;
+
   // Removed Move constrcutor, because mutexes are not movable.
-  blocking_mpmc_unbounded(blocking_mpmc_unbounded&& other) = delete;
-  blocking_mpmc_unbounded& operator=(blocking_mpmc_unbounded&& other) = delete;
-  
-  
+  blocking_mpmc_unbounded(blocking_mpmc_unbounded &&other) = delete;
+  blocking_mpmc_unbounded &operator=(blocking_mpmc_unbounded &&other) = delete;
+
   // 1. void push(value) : Pushes the value inside the queue, copies the value
   void push(T);
 
   // 2. void wait_and_pop(value ref) : Blocking wait on queue, returns value in
   // the reference passed as parameter
-  void wait_and_pop(T&);
+  void wait_and_pop(T &);
 
   // 3. std::shared_ptr wait_and_pop(void) : Blocking wait on queue, returns
   // value as a shared ptr allocated inside the call
@@ -104,7 +115,7 @@ public:
 
   // 4. bool try_pop(value ref) : Returns true and gives the value in reference
   // passed, false otherwise
-  bool try_pop(T&);
+  bool try_pop(T &);
 
   // 5. std::shared_ptr try_pop() : Returns a shared ptr with data, returns
   // nullptr if failed
@@ -113,40 +124,32 @@ public:
   // 6. bool empty() : Returns whether the queue is empty or not at that instant
   bool empty();
 
-  // 7. Add static asserts
-  static_assert(std::is_copy_constructible_v(T) || std::is_move_constructible_v<T>,
-  "T must be copyable or movable to be pushed into the queue.");
-
-  static_assert(std::is_copy_assignable_v(T) || std::is_move_assignable_v<T>,
-  "T must be copy-assignable or move-assignable to be popped into a reference.");
-
- static_assert(!std::is_reference_v<T>, 
-              "Queue cannot store reference types.");
+  // 7. Add static asserts (Added in functions which need those.)
 
   // 8. Add emplace_back using perfect forwarding and variadic templates (you
   // can use this in push then)
-  template <typename... Args>
-  void emplace_back(Args&&... args);
+  template <typename... Args> void emplace_back(Args &&...args);
 
   // 9. Add size() function
   size_t size();
 
   // 10. Any more suggestions ??
-  bool wait_for_pop(T&, std::chrono::milliseconds);
-  std::shared_ptr<T> wait_for_pop(std::chrono::milliseconds);
 
-  // This function will allow us to peek the "head" of queue if it exist.
-  bool peek(T&);
-  std::shared_ptr<T> peek();
+  // This function will allow us to peek the "head" of queue (AT THAT INSTANT,
+  // IT CAN CHANGE NEXT INSTANCE) if it exist. Unsafe for operations like
+  // peeking and checking a condition before pop, as the element might be poped
+  // already and other element might be pushed.
+  bool unsafe_peek(T &);
+  std::shared_ptr<T> unsafe_peek();
+
   // wait_for_get() added to private section.
-  bool wait_for_and_pop(T&, std::chrono::milliseconds);
+  bool wait_for_and_pop(T &, std::chrono::milliseconds);
   std::shared_ptr<T> wait_for_and_pop(std::chrono::milliseconds);
   // wait_for_and_get() added to private section.
 
   void clear();
   // clears all the elements in the queue.
-
 };
-} // namespace tsfqueue::__impl
+} // namespace tsfqueue::impl
 
 #endif
